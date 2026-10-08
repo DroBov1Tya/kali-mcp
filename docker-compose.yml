@@ -1,0 +1,52 @@
+name: kali-mcp
+
+services:
+
+  kali:
+    container_name: ${KALI_CONTAINER:-kali-mcp}
+    build:
+      context: ./kali
+      dockerfile: Dockerfile
+    platform: ${PLATFORM:-linux/arm64}
+    restart: unless-stopped
+    stdin_open: true
+    tty: true
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    sysctls:
+      net.ipv4.conf.all.rp_filter: 0
+    environment:
+      VPN_GATEWAY: ${VPN_GATEWAY:-}
+      KILL_SWITCH: ${KILL_SWITCH:-1}
+      DEBIAN_FRONTEND: noninteractive
+    volumes:
+      - ${KALI_WORKSPACE:-~/kali-workspace}:/workspace
+      - kali-apt-cache:/var/cache/apt
+    command: bash
+
+  mcp:
+    container_name: kali-mcp-server
+    profiles:
+      - mcp
+    build:
+      context: ./mcp
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - kali
+    ports:
+      - "${MCP_PORT:-8080}:8080"
+    volumes:
+      # Docker socket so the MCP server can docker exec into the kali container
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      KALI_CONTAINER: ${KALI_CONTAINER:-kali-mcp}
+      KALI_EXEC_TIMEOUT: ${KALI_EXEC_TIMEOUT:-120}
+      KALI_PROXY: ${KALI_PROXY:-}
+      MCP_HOST: "0.0.0.0"
+      MCP_PORT: "8080"
+      MCP_TRANSPORT: "sse"
+
+volumes:
+  kali-apt-cache:
