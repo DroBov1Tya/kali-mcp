@@ -36,7 +36,7 @@ services:
     depends_on:
       - kali
     ports:
-      - "${MCP_PORT:-8080}:8080"
+      - "${MCP_PORT:-8172}:8172"
     volumes:
       # Docker socket so the MCP server can docker exec into the kali container
       - /var/run/docker.sock:/var/run/docker.sock
@@ -45,7 +45,7 @@ services:
       KALI_EXEC_TIMEOUT: ${KALI_EXEC_TIMEOUT:-120}
       KALI_PROXY: ${KALI_PROXY:-}
       MCP_HOST: "0.0.0.0"
-      MCP_PORT: "8080"
+      MCP_PORT: "8172"
       MCP_TRANSPORT: "sse"
 
 volumes:

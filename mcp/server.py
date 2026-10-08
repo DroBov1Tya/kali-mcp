@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import subprocess
 import sys
 
 logging.basicConfig(stream=sys.stderr, level=logging.INFO)
@@ -30,12 +31,95 @@ log = logging.getLogger("kali-shell-mcp")
 
 from mcp.server.fastmcp import FastMCP
 
+
+def _load_dotenv() -> dict[str, str]:
+    """Load .env from the project root (one level up). Does not override existing env vars."""
+    env_file = os.path.join(os.path.dirname(__file__), "..", ".env")
+    env_file = os.path.abspath(env_file)
+    values: dict[str, str] = {}
+    if not os.path.exists(env_file):
+        return values
+    with open(env_file) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            key = key.strip()
+            val = val.strip().strip('"').strip("'")
+            values[key] = val
+            if key not in os.environ:
+                os.environ[key] = val
+    return values
+
+
+def _resolve_transport() -> str:
+    """Determine transport mode: sse (docker) or stdio (local).
+
+    Resolution order:
+      1. MCP_TRANSPORT env var (explicit override)
+      2. COMPOSE_PROFILES env / .env: if contains 'mcp' → sse
+      3. Interactive TTY: prompt the user to choose
+      4. Default: stdio
+    """
+    if os.environ.get("MCP_TRANSPORT"):
+        return os.environ["MCP_TRANSPORT"]
+
+    profiles = os.environ.get("COMPOSE_PROFILES", "")
+    if "mcp" in profiles:
+        return "sse"
+
+    # Running interactively — ask the user
+    if sys.stdin.isatty() and sys.stderr.isatty():
+        sys.stderr.write(
+            "\nMCP transport not configured in .env (COMPOSE_PROFILES).\n"
+            "  [1] stdio  — run locally, Claude Code spawns this process (default)\n"
+            "  [2] sse    — run as HTTP server, docker compose manages the container\n"
+            "Choice [1/2, default=1]: "
+        )
+        sys.stderr.flush()
+        choice = sys.stdin.readline().strip()
+        if choice == "2":
+            return "sse"
+
+    return "stdio"
+
+
+_load_dotenv()
+
 CONTAINER = os.environ.get("KALI_CONTAINER", "kali-mcp")
+
+def _autostart_kali() -> None:
+    """Start the kali container if it exists but is stopped. Skipped inside Docker."""
+    if os.path.exists("/.dockerenv"):
+        return
+    try:
+        proc = subprocess.run(
+            ["docker", "inspect", "-f", "{{.State.Running}}", CONTAINER],
+            capture_output=True, text=True,
+        )
+        if proc.returncode != 0:
+            log.info("autostart: container '%s' not found, skipping", CONTAINER)
+            return
+        if proc.stdout.strip() == "true":
+            log.info("autostart: container '%s' already running", CONTAINER)
+            return
+        subprocess.Popen(
+            ["docker", "start", CONTAINER],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        log.info("autostart: starting container '%s'", CONTAINER)
+    except FileNotFoundError:
+        log.warning("autostart: docker binary not found, skipping")
 IMAGE = os.environ.get("KALI_IMAGE", "kali-mcp:latest")
 DEFAULT_TIMEOUT = int(os.environ.get("KALI_EXEC_TIMEOUT", "120"))
 WORKSPACE_HOST = os.path.expanduser(os.environ.get("KALI_WORKSPACE", "~/kali-workspace"))
 
-mcp = FastMCP("kali-shell")
+mcp = FastMCP(
+    "kali-shell",
+    host=os.environ.get("MCP_HOST", "0.0.0.0"),
+    port=int(os.environ.get("MCP_PORT", "8172")),
+)
 
 _env_proxy: str | None = os.environ.get("KALI_PROXY", "").strip() or None
 _session_proxy: str | None = _env_proxy
@@ -369,14 +453,10 @@ async def kali_set_proxy(proxy: str | None = None) -> str:
 
 
 def main() -> None:
-    host = os.environ.get("MCP_HOST", "0.0.0.0")
-    port = int(os.environ.get("MCP_PORT", "8080"))
-    transport = os.environ.get("MCP_TRANSPORT", "sse")
-    log.info("kali-shell-mcp starting: container=%s transport=%s port=%s", CONTAINER, transport, port)
-    if transport == "sse":
-        mcp.run(transport="sse", host=host, port=port)
-    else:
-        mcp.run()
+    _autostart_kali()
+    transport = _resolve_transport()
+    log.info("kali-shell-mcp starting: container=%s transport=%s", CONTAINER, transport)
+    mcp.run(transport=transport)
 
 
 if __name__ == "__main__":
