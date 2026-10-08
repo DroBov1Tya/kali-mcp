@@ -17,8 +17,8 @@ services:
     sysctls:
       net.ipv4.conf.all.rp_filter: 0
     environment:
-      VPN_GATEWAY: ${VPN_GATEWAY:-}
       KILL_SWITCH: ${KILL_SWITCH:-1}
+      PROXY_PORT: ${PROXY_PORT:-7897}
       DEBIAN_FRONTEND: noninteractive
     volumes:
       - ${KALI_WORKSPACE:-~/kali-workspace}:/workspace

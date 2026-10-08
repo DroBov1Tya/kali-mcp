@@ -1,49 +1,73 @@
 #!/usr/bin/env bash
-# Kill-switch: allow traffic only through VPN gateway, block everything else.
-# VPN_GATEWAY can be set explicitly in .env or auto-detected from the default route.
+# Kill-switch via redsocks: all TCP traffic is transparently routed through
+# Clash Verge's SOCKS5 proxy on the host (host.docker.internal:CLASH_PROXY_PORT).
+# If Clash is down → proxy unreachable → connections fail immediately (0ms delay).
 set -euo pipefail
 
 KILL_SWITCH="${KILL_SWITCH:-1}"
-VPN_GATEWAY="${VPN_GATEWAY:-}"
+PROXY_HOST="${PROXY_HOST:-host.docker.internal}"
+PROXY_PORT="${PROXY_PORT:-7897}"
+REDSOCKS_PORT=12345
 
-resolve_gateway() {
-    # Auto-detect: use the container's default route (set by Docker Desktop,
-    # which already routes through the host's VPN on macOS)
-    ip route 2>/dev/null | awk '/default/{print $3; exit}'
+# ── redsocks config ───────────────────────────────────────────────────────────
+
+start_redsocks() {
+    cat > /etc/redsocks.conf << EOF
+base {
+    log_debug = off;
+    log_info  = on;
+    log       = "stderr";
+    daemon    = off;
+    redirector = iptables;
 }
 
-apply_kill_switch() {
-    [[ "$KILL_SWITCH" != "1" ]] && { echo "[killswitch] disabled"; return; }
-
-    if [[ -z "$VPN_GATEWAY" ]]; then
-        VPN_GATEWAY=$(resolve_gateway)
-    fi
-
-    iptables -F OUTPUT 2>/dev/null || true
-    iptables -F INPUT  2>/dev/null || true
-
-    # Always allow loopback
-    iptables -A OUTPUT -o lo -j ACCEPT
-    iptables -A INPUT  -i lo -j ACCEPT
-
-    # Allow established/related
-    iptables -A INPUT  -m state --state ESTABLISHED,RELATED -j ACCEPT
-    iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
-
-    if [[ -n "$VPN_GATEWAY" ]]; then
-        iptables -A OUTPUT -d "$VPN_GATEWAY" -j ACCEPT
-        iptables -A INPUT  -s "$VPN_GATEWAY" -j ACCEPT
-        iptables -P OUTPUT DROP
-        iptables -P INPUT  DROP
-        echo "[killswitch] ACTIVE — gateway=${VPN_GATEWAY}"
-    else
-        # No gateway found = VPN is down, block everything
-        iptables -P OUTPUT DROP
-        iptables -P INPUT  DROP
-        echo "[killswitch] VPN DOWN — all outbound traffic BLOCKED"
-    fi
+redsocks {
+    local_ip   = 127.0.0.1;
+    local_port = ${REDSOCKS_PORT};
+    ip         = ${PROXY_HOST};
+    port       = ${PROXY_PORT};
+    type       = socks5;
+}
+EOF
+    redsocks -c /etc/redsocks.conf &
+    sleep 0.5
+    echo "[killswitch] redsocks started → ${PROXY_HOST}:${PROXY_PORT}"
 }
 
-apply_kill_switch
-echo "[kali-mcp] ready"
+# ── iptables: redirect all outbound TCP through redsocks ─────────────────────
+
+apply_iptables() {
+    # Nat table — REDSOCKS chain
+    iptables -t nat -N REDSOCKS 2>/dev/null || iptables -t nat -F REDSOCKS
+
+    # Skip private / loopback / link-local ranges
+    iptables -t nat -A REDSOCKS -d 0.0.0.0/8      -j RETURN
+    iptables -t nat -A REDSOCKS -d 10.0.0.0/8     -j RETURN
+    iptables -t nat -A REDSOCKS -d 127.0.0.0/8    -j RETURN
+    iptables -t nat -A REDSOCKS -d 169.254.0.0/16 -j RETURN
+    iptables -t nat -A REDSOCKS -d 172.16.0.0/12  -j RETURN
+    iptables -t nat -A REDSOCKS -d 192.168.0.0/16 -j RETURN
+    iptables -t nat -A REDSOCKS -d 224.0.0.0/4    -j RETURN
+    iptables -t nat -A REDSOCKS -d 240.0.0.0/4    -j RETURN
+
+    # Redirect all remaining TCP to redsocks listener
+    iptables -t nat -A REDSOCKS -p tcp -j REDIRECT --to-ports ${REDSOCKS_PORT}
+
+    # Apply to all outbound TCP
+    iptables -t nat -A OUTPUT -p tcp -j REDSOCKS
+
+    echo "[killswitch] iptables NAT rules applied — all TCP → redsocks"
+}
+
+# ── startup ───────────────────────────────────────────────────────────────────
+
+if [[ "$KILL_SWITCH" != "1" ]]; then
+    echo "[killswitch] disabled"
+    exec "$@"
+fi
+
+start_redsocks
+apply_iptables
+
+echo "[kali-mcp] ready — traffic via ${PROXY_HOST}:${PROXY_PORT}"
 exec "$@"

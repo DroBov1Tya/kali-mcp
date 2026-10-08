@@ -24,6 +24,7 @@ RUN apt-get update -y && \
         netcat-openbsd dnsutils whois \
         traceroute tcpdump \
         proxychains4 tor torsocks \
+        redsocks \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # ── 4. Web fuzzing & scanning ─────────────────────────────────────────────────
