@@ -12,11 +12,11 @@ Tools (all callable directly by agents, no manual docker exec needed):
   kali_read_file   Read a text file from the container.
   kali_install     Install apt packages.
   kali_start       Ensure the container is running (start if stopped).
-  kali_status      Report container state, VPN/network status.
+  kali_status      Report container state and network status.
 
 Proxy: optional. If KALI_PROXY env or kali_set_proxy is set, proxy env vars
-are injected. Without a proxy, commands still run (VPN kill-switch on the
-container handles traffic routing).
+are injected. Without an explicit command proxy, the external gateway handles
+traffic routing. Kali cannot change the gateway's firewall.
 """
 from __future__ import annotations
 
@@ -172,7 +172,7 @@ async def _exec(
             stderr=asyncio.subprocess.STDOUT,
         )
     except FileNotFoundError:
-        return "ERROR: `docker` binary not found on PATH."
+        return "ERROR: 'docker' binary not found on PATH."
     except Exception as exc:
         return f"ERROR: spawn failed: {exc!r}"
 
@@ -213,7 +213,7 @@ async def kali_exec(
 ) -> str:
     """Run a shell command inside the Kali container.
 
-    Use this instead of `docker exec` — agents should call this tool directly.
+    Use this instead of 'docker exec' — agents should call this tool directly.
     Supports pipes, &&, subshells, redirects — anything sh -c accepts.
     Output (stdout + stderr combined) and exit code are returned.
 
@@ -227,7 +227,7 @@ async def kali_exec(
     if not await _container_running():
         return (
             f"ERROR: container '{CONTAINER}' is not running.\n"
-            "Call kali_start first, or run: bash run.sh"
+            "Call kali_start first, or run: docker compose up -d gateway kali"
         )
     return await _exec(command, timeout=timeout, workdir=workdir, as_root=as_root, proxy=proxy)
 
@@ -347,7 +347,7 @@ async def kali_start() -> str:
 
     If it already runs — reports OK.
     If it exists but is stopped — starts it.
-    If it doesn't exist — returns instructions to run ./run.sh.
+    If it doesn't exist — returns Compose setup instructions.
     """
     # Check if container exists at all
     proc = await asyncio.create_subprocess_exec(
@@ -360,8 +360,7 @@ async def kali_start() -> str:
     if proc.returncode != 0:
         return (
             f"Container '{CONTAINER}' does not exist.\n"
-            "Build and start it with:  bash run.sh\n"
-            f"Or build only:            bash run.sh build"
+            "Build and start it with: docker compose up -d --build gateway kali\n"
         )
 
     status = out.decode().strip()
@@ -382,7 +381,7 @@ async def kali_start() -> str:
 
 @mcp.tool()
 async def kali_status() -> str:
-    """Report container state and basic network/VPN info.
+    """Report container state and basic network info.
 
     Call this first to understand the environment before running commands.
     """
@@ -399,7 +398,7 @@ async def kali_status() -> str:
     if proc.returncode != 0:
         return (
             f"Container '{CONTAINER}' not found.\n"
-            "Run:  bash run.sh"
+            "Run: docker compose up -d --build gateway kali"
         )
 
     parts = out.decode().strip().split("|")
@@ -410,7 +409,7 @@ async def kali_status() -> str:
         f"state     : {state}",
         f"running   : {running}",
         f"started   : {started_at}",
-        f"proxy     : {_session_proxy or 'not set (VPN kill-switch handles routing)'}",
+        f"proxy     : {_session_proxy or 'not set (external SOCKS5 gateway handles routing)'}",
     ]
 
     if running == "true":
@@ -425,7 +424,7 @@ async def kali_status() -> str:
         lines.append("Ready. Use kali_exec to run commands.")
     else:
         lines.append("")
-        lines.append(f"WARN: container not running. Call kali_start or run: bash run.sh")
+        lines.append("WARN: container not running. Call kali_start or run: docker compose up -d gateway kali")
 
     return "\n".join(lines)
 
@@ -448,7 +447,7 @@ async def kali_set_proxy(proxy: str | None = None) -> str:
     return (
         f"OK: cleared. Using KALI_PROXY env default: {_env_proxy}"
         if _env_proxy else
-        "OK: cleared. No proxy active (VPN kill-switch routes traffic)."
+        "OK: cleared command proxy. External SOCKS5 gateway still routes traffic."
     )
 
 

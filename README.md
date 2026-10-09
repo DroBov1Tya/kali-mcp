@@ -17,12 +17,39 @@ Agents call tools directly -- no manual docker exec needed.
 
 ## Kill-switch
 
-All TCP traffic from the container is transparently routed through the
-system SOCKS5 proxy via redsocks. If the proxy goes down, connections
-fail immediately -- no polling, no leak window.
+The 'gateway' service owns the network namespace and its firewall. Kali shares
+that namespace but runs without 'NET_ADMIN' and 'NET_RAW', with
+'no-new-privileges'. Commands still run as root: package installation and file
+operations work, but changing routes, interfaces or firewall rules is denied,
+including through 'docker exec -u 0'.
 
-Set PROXY_PORT in .env to your proxy port (default: 7897).
-Set KILL_SWITCH=0 to disable (not recommended).
+Public IPv4 TCP is transparently routed through the configured SOCKS5 endpoint
+via redsocks. Local DNS uses Unbound, forwarding over TCP through the same proxy.
+Direct private/link-local connections, Docker's embedded DNS, outbound UDP,
+IPv6 and unsolicited inbound network connections are blocked. Loopback remains
+available for local services. Only the configured SOCKS5 endpoint is allowed as
+a direct external connection. If the proxy or gateway daemons fail, there is
+no fallback to direct egress.
+
+Set 'PROXY_PORT' in '.env' (default: 7897). 'PROXY_HOST' defaults to
+'host.docker.internal'; custom values must be IPv4 literals or '/etc/hosts'
+entries in the gateway. 'DNS_UPSTREAM' defaults to '1.1.1.1'.
+'KILL_SWITCH=0' is rejected; changing policy requires access to the Compose
+configuration or Docker daemon outside Kali.
+
+Raw/SYN scans and packet capture are unavailable. For nmap use '-sT -Pn'.
+SOCKS5 controls which remote destinations are reachable: local firewall rules
+do not restrict destinations requested explicitly through SOCKS5. Apply target
+ACLs on the proxy if needed. The shared namespace also shares loopback ports;
+this is isolation from network administration, not isolation of local services.
+Do not mount the Docker socket or host credentials into Kali.
+
+After upgrading, recreate both services together:
+
+    docker compose up -d --build --force-recreate gateway kali
+
+'kali_start' can start an existing container, but cannot migrate an old container
+to this network topology. Recreate Kali whenever the gateway is replaced.
 
 ## MCP server modes
 
@@ -65,11 +92,14 @@ Claude Code connects via HTTP:
 
     PLATFORM            linux/arm64 or linux/amd64
     PROXY_PORT          SOCKS5 proxy port (default: 7897)
-    KILL_SWITCH         1 to enable, 0 to disable (default: 1)
+    PROXY_HOST          SOCKS5 IPv4 or gateway /etc/hosts entry (default: host.docker.internal)
+    DNS_UPSTREAM        upstream IPv4 resolver, reached through SOCKS5 (default: 1.1.1.1)
+    KILL_SWITCH         must be 1; unrestricted mode is rejected
     KALI_WORKSPACE      host path mounted as /workspace (default: ./workspace)
     KALI_CONTAINER      container name (default: kali-mcp)
     KALI_EXEC_TIMEOUT   command timeout in seconds (default: 120)
     MCP_PORT            SSE server port (default: 8172)
+    COMPOSE_PROFILES    set to "mcp" to run MCP as a container
 
 ## Toolkit included
 
